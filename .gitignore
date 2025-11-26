@@ -1,0 +1,22 @@
+# Large data files
+books.csv
+reviews.csv
+captute.pdf
+
+# Solution artifacts
+solution/
+tools/
+*.docx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
