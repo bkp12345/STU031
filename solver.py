@@ -80,8 +80,8 @@ def find_book_and_flag1():
     print(f"  Found {len(hash_reviews)} reviews containing the hash")
     
     if len(hash_reviews) == 0:
-        print("  ✗ Hash not found in any review!")
-        return None, None, None
+        print("  [ERROR] Hash not found in any review!")
+        return None, None, None, None
     
     # Get the ASIN from the review
     for _, review in hash_reviews.iterrows():
@@ -96,7 +96,7 @@ def find_book_and_flag1():
         
         if len(matching_books) > 0:
             book = matching_books.iloc[0]
-            print(f"  ✓ Found book: {book['title']}")
+            print(f"  [FOUND] Found book: {book['title']}")
             print(f"    ASIN: {review_asin}, Parent: {review_parent}")
             print(f"    Average Rating: {book['average_rating']}, Rating Count: {book['rating_number']}")
             
@@ -107,12 +107,12 @@ def find_book_and_flag1():
             print(f"    Title (first 8 non-space): {title_clean}")
             print(f"    FLAG1: {flag1}")
             
-            return book, review, flag1
+            return book, review, flag1, reviews_df
     
-    print("  ✗ No matching book found for reviews with hash!")
-    return None, None, None
+    print("  [ERROR] No matching book found for reviews with hash!")
+    return None, None, None, None
 
-book, review, flag1 = find_book_and_flag1()
+book, review, flag1, reviews_df = find_book_and_flag1()
 
 # ============================================================================
 # STEP 2: Identify fake review (FLAG2)
@@ -202,6 +202,214 @@ def find_flag3(target_book, search_hash):
     
     return flag3
 
+# ============================================================================
+# STEP 3B: Machine Learning Classification Model (Optional Enhancement)
+# ============================================================================
+
+def train_classification_model(book, search_hash, reviews_data):
+    """
+    Train a Random Forest classifier to distinguish suspicious vs genuine reviews.
+    Returns trained model and feature importance analysis.
+    """
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import StandardScaler
+        
+        print("\n" + "="*70)
+        print("ML CLASSIFICATION MODEL - SUSPICIOUS REVIEW DETECTION")
+        print("="*70)
+        
+        if book is None or book.empty:
+            print("[WARNING] Book not found, skipping model training")
+            return None, None, None
+        
+        # Get reviews for this book
+        reviews_for_book = reviews_data[reviews_data['book_id'] == book['book_id'].values[0]]
+        
+        if len(reviews_for_book) < 3:
+            print(f"[WARNING] Insufficient reviews ({len(reviews_for_book)}) for model training")
+            return None, None, None
+        
+        print(f"\n[ML] Found {len(reviews_for_book)} reviews for model training")
+        
+        # Identify fake review (contains search hash) vs genuine reviews
+        fake_reviews = reviews_for_book[reviews_for_book['text'].str.contains(search_hash, case=False, na=False)]
+        genuine_reviews = reviews_for_book[~reviews_for_book['text'].str.contains(search_hash, case=False, na=False)]
+        
+        print(f"[ML] Fake reviews (with hash): {len(fake_reviews)}")
+        print(f"[ML] Genuine reviews: {len(genuine_reviews)}")
+        
+        if len(fake_reviews) == 0 or len(genuine_reviews) < 2:
+            print("[WARNING] Insufficient data for balanced training")
+            return None, None, None
+        
+        # Feature Engineering
+        def extract_features(text):
+            """Extract numerical features from review text"""
+            features = {}
+            features['char_length'] = len(text)
+            features['word_count'] = len(text.split())
+            words = text.split()
+            features['avg_word_length'] = np.mean([len(w) for w in words]) if words else 0
+            features['caps_ratio'] = sum(1 for c in text if c.isupper()) / max(len(text), 1)
+            features['digit_ratio'] = sum(1 for c in text if c.isdigit()) / max(len(text), 1)
+            features['punctuation_count'] = sum(1 for c in text if c in '!?.,:;-')
+            
+            positive_words = ['amazing', 'excellent', 'great', 'wonderful', 'perfect', 'awesome', 'love', 'fantastic']
+            negative_words = ['bad', 'terrible', 'awful', 'horrible', 'waste', 'poor', 'hate', 'boring']
+            
+            features['positive_count'] = sum(1 for w in words if w.lower() in positive_words)
+            features['negative_count'] = sum(1 for w in words if w.lower() in negative_words)
+            features['superlative_count'] = sum(1 for w in words if w.lower().endswith(('est', 'ly')))
+            features['exclamation_count'] = text.count('!')
+            features['question_count'] = text.count('?')
+            features['all_caps_ratio'] = sum(1 for w in words if w.isupper() and len(w) > 1) / max(len(words), 1)
+            unique_words = len(set(w.lower() for w in words))
+            features['repetition_ratio'] = 1 - (unique_words / max(len(words), 1))
+            
+            return features
+        
+        # Extract features from fake and genuine reviews
+        fake_features = pd.DataFrame([extract_features(text) for text in fake_reviews['text']])
+        genuine_features = pd.DataFrame([extract_features(text) for text in genuine_reviews['text']])
+        
+        # Create labeled dataset
+        X = pd.concat([fake_features, genuine_features], ignore_index=True)
+        y = np.array([1] * len(fake_features) + [2] * len(genuine_features))  # 1=Suspicious, 2=Genuine
+        
+        # Get TF-IDF features
+        vectorizer = TfidfVectorizer(max_features=50)
+        tfidf_features = vectorizer.fit_transform(
+            list(fake_reviews['text']) + list(genuine_reviews['text'])
+        ).toarray()
+        
+        # Combine features
+        X_combined = np.hstack([X.values, tfidf_features])
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_combined)
+        
+        # Train Random Forest
+        rf_model = RandomForestClassifier(n_estimators=100, max_depth=10, class_weight='balanced', random_state=42)
+        rf_model.fit(X_scaled, y)
+        
+        # Evaluate
+        train_accuracy = rf_model.score(X_scaled, y)
+        
+        print(f"\n[ML] Model Training Results:")
+        print(f"  • Accuracy: {train_accuracy*100:.1f}%")
+        print(f"  • Classes: 1=Suspicious, 2=Genuine")
+        print(f"  • Features: {X_combined.shape[1]} (14 numerical + 50 TF-IDF)")
+        
+        # Feature importance
+        feature_importance = rf_model.feature_importances_
+        sorted_idx = np.argsort(feature_importance)[::-1][:5]
+        
+        print(f"\n[ML] Top 5 Most Important Features:")
+        feature_names = list(X.columns) + list(vectorizer.get_feature_names_out())
+        for rank, idx in enumerate(sorted_idx, 1):
+            fname = feature_names[idx] if idx < len(feature_names) else f"Feature_{idx}"
+            print(f"  {rank}. {fname}: {feature_importance[idx]:.4f}")
+        
+        return rf_model, scaler, vectorizer
+        
+    except ImportError:
+        print("[WARNING] sklearn not available, skipping model training")
+        return None, None, None
+    except Exception as e:
+        print(f"[WARNING] Model training error: {e}")
+        return None, None, None
+
+# Train the model
+rf_model, scaler, vectorizer = train_classification_model(book, SEARCH_HASH, reviews_df)
+
+# ============================================================================
+# ML MODEL PREDICTION - Classify reviews and identify suspicious words
+# ============================================================================
+
+def predict_review_suspicion(review_text, model, scaler, vectorizer):
+    """
+    Use trained model to predict if a review is suspicious (1) or genuine (2).
+    Returns prediction, confidence, and key words.
+    """
+    try:
+        if model is None or scaler is None or vectorizer is None:
+            return None, None, None
+        
+        # Extract features
+        def extract_features(text):
+            features = {}
+            features['char_length'] = len(text)
+            features['word_count'] = len(text.split())
+            words = text.split()
+            features['avg_word_length'] = np.mean([len(w) for w in words]) if words else 0
+            features['caps_ratio'] = sum(1 for c in text if c.isupper()) / max(len(text), 1)
+            features['digit_ratio'] = sum(1 for c in text if c.isdigit()) / max(len(text), 1)
+            features['punctuation_count'] = sum(1 for c in text if c in '!?.,:;-')
+            
+            positive_words = ['amazing', 'excellent', 'great', 'wonderful', 'perfect', 'awesome', 'love', 'fantastic']
+            negative_words = ['bad', 'terrible', 'awful', 'horrible', 'waste', 'poor', 'hate', 'boring']
+            
+            features['positive_count'] = sum(1 for w in words if w.lower() in positive_words)
+            features['negative_count'] = sum(1 for w in words if w.lower() in negative_words)
+            features['superlative_count'] = sum(1 for w in words if w.lower().endswith(('est', 'ly')))
+            features['exclamation_count'] = text.count('!')
+            features['question_count'] = text.count('?')
+            features['all_caps_ratio'] = sum(1 for w in words if w.isupper() and len(w) > 1) / max(len(words), 1)
+            unique_words = len(set(w.lower() for w in words))
+            features['repetition_ratio'] = 1 - (unique_words / max(len(words), 1))
+            
+            return features
+        
+        # Extract and scale features
+        num_features = pd.DataFrame([extract_features(review_text)])
+        tfidf_features = vectorizer.transform([review_text]).toarray()
+        X_combined = np.hstack([num_features.values, tfidf_features])
+        X_scaled = scaler.transform(X_combined)
+        
+        # Predict
+        prediction = model.predict(X_scaled)[0]
+        probabilities = model.predict_proba(X_scaled)[0]
+        confidence = probabilities[prediction - 1] * 100
+        
+        # Get important words from TF-IDF
+        feature_names = list(vectorizer.get_feature_names_out())
+        tfidf_scores = tfidf_features[0]
+        top_word_indices = np.argsort(tfidf_scores)[::-1][:3]
+        top_words = [feature_names[i] for i in top_word_indices if tfidf_scores[i] > 0]
+        
+        class_names = {1: "SUSPICIOUS", 2: "GENUINE"}
+        
+        return class_names[prediction], confidence, top_words
+        
+    except Exception as e:
+        return None, None, None
+
+# ============================================================================
+# DEMONSTRATE ML MODEL ON SAMPLE REVIEWS
+# ============================================================================
+
+if rf_model is not None:
+    print("\n" + "="*70)
+    print("ML MODEL PREDICTIONS - Testing on sample reviews")
+    print("="*70)
+    
+    sample_reviews = [
+        "This book is absolutely AMAZING!!! PERFECT!!! Best ever!!!!",
+        "Interesting book with great characters and good plot development.",
+        "The story was okay, some parts were good and others were slow."
+    ]
+    
+    for i, sample in enumerate(sample_reviews, 1):
+        prediction, confidence, words = predict_review_suspicion(sample, rf_model, scaler, vectorizer)
+        
+        if prediction:
+            print(f"\n[Sample {i}] {sample[:50]}...")
+            print(f"  Prediction: {prediction}")
+            print(f"  Confidence: {confidence:.1f}%")
+            print(f"  Key words: {', '.join(words) if words else 'N/A'}")
+
 flag3 = find_flag3(book, SEARCH_HASH) if book is not None and not book.empty else None
 
 # ============================================================================
@@ -222,7 +430,7 @@ FLAG3 = {flag3}
     flags_file = OUTPUT_DIR / "flags.txt"
     with open(flags_file, 'w') as f:
         f.write(flags_content)
-    print(f"✓ Flags saved to {flags_file}")
+    print(f"[SUCCESS] Flags saved to {flags_file}")
 elif flag1 and flag2:
     flags_content = f"""FLAG1 = {flag1}
 FLAG2 = {flag2}
@@ -233,7 +441,7 @@ FLAG3 = (not found)
     flags_file = OUTPUT_DIR / "flags.txt"
     with open(flags_file, 'w') as f:
         f.write(flags_content)
-    print(f"✓ Partial flags saved to {flags_file}")
+    print(f"[SUCCESS] Partial flags saved to {flags_file}")
 else:
     print("✗ Could not generate flags!")
     if flag2:
@@ -244,7 +452,7 @@ FLAG3 = (not found)
         flags_file = OUTPUT_DIR / "flags.txt"
         with open(flags_file, 'w') as f:
             f.write(flags_content)
-        print(f"✓ Partial flag (FLAG2) saved to {flags_file}")
+        print(f"[SUCCESS] Partial flag (FLAG2) saved to {flags_file}")
 
 print("\n[INFO] Next steps:")
 print("1. Create GitHub repo: CTF_STU031")
