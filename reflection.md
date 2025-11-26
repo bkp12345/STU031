@@ -1,21 +1,34 @@
-# Reflection - CTF Challenge Solution Methodology
+# Reflection – CTF Challenge Solution Methodology
 
 ## Problem Analysis
-The challenge required identifying a manipulated book in a 20,000+ book dataset where someone artificially inflated ratings (5.0 stars with exactly 1234 reviews) and embedded a hidden clue in a fake review.
+The challenge required identifying a manipulated book within a large dataset by using hashing, data filtering, text analysis, and machine learning. The attacker boosted a book’s rating to a perfect 5.0 with exactly 1234 reviews and embedded a SHA256-based clue inside a fake review. My objective was to detect this manipulated entry and extract three security flags using systematic analysis.
 
-## Solution Approach
+## Step-by-Step Solution
 
-**Step 1 - Hash Computation & Book Finding:**
-Computed SHA256("STU031")  979DA9FA. Applied dual-criteria filtering (rating_number=1234, average_rating=5.0) reducing 20,000 books to 150 candidates. Scanned 728,000+ reviews for the hash and located "Four: A Divergent Collection."
+### Step 1 – Hash Computation & Book Identification
+I computed the SHA256 hash of “STU031” which produced the personal hash 979DA9FA. Using the given anomaly criteria (rating_number = 1234 and average_rating = 5.0), I filtered the book dataset down to 150 candidate books. I then scanned all reviews for the embedded hash and successfully identified the manipulated target book: **“Four: A Divergent Collection.”**
 
-**Step 2 - FLAG1 Extraction:**
-Extracted first 8 non-space characters from title: "Four:ADi". Computed SHA256("Four:ADi")  70755B97.
+### Step 2 – FLAG1 & FLAG2
+FLAG1 was computed by taking the first eight non-space characters of the title ("Four:ADi") and hashing them, resulting in 70755B97. FLAG2 was extracted directly from the fake review as `FLAG2{979DA9FA}`.
 
-**Step 3 - FLAG2 Identification:**
-Located the fake review containing embedded hash (979DA9FA) and formatted as FLAG2{979DA9FA}.
+## Step 3 – Machine Learning & Explainability for FLAG3
+To generate FLAG3 and understand review authenticity, I built an ML model to differentiate genuine and suspicious reviews.
 
-**Step 4 - FLAG3 (Model-Based Analysis):**
-Trained a Random Forest classifier to distinguish suspicious (short, superlative-heavy) from genuine (detailed, domain-specific) reviews. Engineered 14 numerical features plus 50 TF-IDF features achieving 100% accuracy. Applied SHAP analysis on genuine reviews to identify features reducing suspicion. Top 3 words: "great," "boot," "awesome." Generated FLAG3 via SHA256("greatbootawesome1")  67111029.
+### ML Classification Approach
+I engineered **14 numerical text features**, including:
+- review length  
+- word count  
+- average word length  
+- punctuation usage  
+- superlative count  
+- uppercase ratio  
+- repetition ratio  
+- sentiment word counts  
 
-## Key Learnings
-Data formatting precision is critical�initial spacing error ("STU 031") produced wrong hashes. Efficient filtering achieved 99% search space reduction. SHAP analysis effectively explained model decisions for anomaly detection. Combining traditional data analysis with modern ML created a robust detection pipeline, demonstrating how explainable AI helps understand automated decisions in security applications.
+Additionally, I used **50 TF-IDF features** to represent linguistic patterns.  
+A **Random Forest classifier** was trained using these features, achieving strong separation between suspicious (short, emotional, repetitive) reviews and genuine (detailed, descriptive) reviews.
+
+### SHAP Explainability
+I used SHAP values to identify which TF-IDF words contributed most to reducing suspicion.  
+The top three genuine-review words were:
+
